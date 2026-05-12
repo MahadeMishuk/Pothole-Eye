@@ -30,13 +30,13 @@ Pothole Eye processes live dashcam footage or uploaded video to:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                         POTHOLE EYE  v2                                  │
+│                         POTHOLE EYE                                      │
 │                                                                          │
 │  ┌─────────────────────┐    ┌────────────────────────────────────────┐  │
 │  │    Input Sources     │    │         GPU Inference Worker           │  │
 │  │                      │    │         (RunPod A40 · CUDA FP16)       │  │
 │  │  Browser Camera ─────┼───▶│  1. YOLOv8m custom (primary)          │  │
-│  │  GoPro / RTSP   ─────┼───▶│     └── RT-DETR-L (optional)          │  │
+│  │                      │    │     └── RT-DETR-L (optional)          │  │
 │  │  Video Upload   ─────┼───▶│                                        │  │
 │  └─────────────────────┘    │  2. YOLOv8l-seg → SegFormer-B2         │  │
 │                              │     → DeepLabV3 → geometric            │  │
@@ -175,13 +175,5 @@ score = 0.40 × depth_delta   (depth std inside bbox → crater depth proxy)
 | Recall | 0.676 |
 | Training config | YOLOv8m · imgsz=1280 · 150 epochs · A40 AMP FP16 |
 
----
-
-
-
----
-
-
----
 
 *Built with YOLOv8 · RT-DETR · Depth Anything V2 · ByteTrack · SegFormer · Flask · Mapbox GL JS · MediaMTX*
