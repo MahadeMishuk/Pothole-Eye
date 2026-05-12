@@ -2,7 +2,7 @@
   <img src="Images/logo.png" width="150" alt="Logo">
 </p>
 
-# Pothole Eye — Real-time pothole detection and alerting system using deep learning
+# Pothole Eye — Real-time pothole detection and alerting system
 
 **Real-time pothole detection, tracking, and automated reporting powered by YOLOv8 + RT-DETR on GPU.**
 
@@ -21,6 +21,8 @@ Pothole Eye processes live dashcam footage or uploaded video to:
 5. **Deduplicate** spatially using 5m Haversine distance to avoid repeat DB entries for the same pothole
 6. **Alert** the driver in real time with Web Audio tones and visual overlays
 7. **Report** confirmed potholes to the Maryland SHA automatically by email with GPS, snapshot, and 3-tier escalation
+
+<img src="Images/screen.png" width="700">
 
 ---
 
