@@ -1,0 +1,124 @@
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: pothole-redis
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: pothole-mediamtx
+    restart: unless-stopped
+    network_mode: host         
+    environment:
+      MTX_PROTOCOLS: tcp
+      MTX_WEBRTCADDITIONALHOSTS: "0.0.0.0"
+    ports:
+      - "8554:8554"   
+      - "8889:8889"   
+      - "8890:8890/udp"   
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9997/v3/paths/list"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+
+
+  pothole-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: pothole-gpu:latest
+    container_name: ai-eyes-on-the-road-gpu
+    depends_on:
+      redis:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+
+   
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  
+              capabilities: [gpu]
+
+    ports:
+      - "5001:5001"
+
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./static/snapshots:/app/static/snapshots
+      - ./database:/app/database
+      - ./models:/app/models
+      - ./.cache/torch:/root/.cache/torch
+      - ./.cache/huggingface:/root/.cache/huggingface   
+      - ./runs:/app/runs
+
+    env_file:
+      - .env.gpu
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+
+    shm_size: "8gb"
+
+  celery-worker:
+    image: pothole-gpu:latest       
+    container_name: pothole-celery-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      pothole-detector:
+        condition: service_healthy     
+
+    command: >
+      celery -A services.video_queue:get_celery_app worker
+        --loglevel=info
+        --concurrency=1
+        --pool=solo
+        -Q celery
+
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./static/snapshots:/app/static/snapshots
+      - ./database:/app/database
+      - ./models:/app/models
+      - ./.cache/torch:/root/.cache/torch
+      - ./.cache/huggingface:/root/.cache/huggingface
+      - ./runs:/app/runs
+
+    env_file:
+      - .env.gpu
+
+    restart: unless-stopped
+
+    shm_size: "8gb"

@@ -1,0 +1,33 @@
+
+services:
+  pothole-detector:
+    build: .
+    container_name: ai-eyes-on-the-road
+
+    ports:
+      - "5001:5001"
+
+    volumes:
+
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./static/snapshots:/app/static/snapshots
+      - ./database:/app/database
+      - ./models:/app/models
+
+
+      - ./.cache/torch:/root/.cache/torch
+
+
+    env_file:
+      - .env
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+

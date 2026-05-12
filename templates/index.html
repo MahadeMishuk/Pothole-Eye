@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pothole Eye — Real-Time Detection</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Mapbox GL JS — map rendering engine -->
+  <link  href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+
+  <!-- Dashboard CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}?v={{ cache_bust }}">
+
+  <!-- SocketIO -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <!--
+    Security note: token is stored in MAPBOX_ACCESS_TOKEN env var and injected
+    via data attributes — it never appears in committed JS source files.
+    For production, restrict the pk.* token to your domain in the account dashboard.
+  -->
+</head>
+
+<body
+  data-mapbox-token="{{ mapbox_token }}"
+  data-mapbox-style="{{ mapbox_style }}"
+  data-default-lat="{{ default_lat }}"
+  data-default-lng="{{ default_lng }}"
+  data-default-zoom="{{ default_zoom }}"
+>
+
+
+<!-- APP WRAPPER -->
+
+<div class="app-wrapper">
+
+  <!-- Header─ -->
+  <header class="app-header">
+    <div class="app-title">
+      <div class="logo-mark">
+        <img src="{{ url_for('static', filename='img/logo.svg') }}"
+             alt="Pothole Eye logo" width="40" height="38" draggable="false">
+      </div>
+      <h1 class="logo-text">
+        Pothole<span class="logo-eye"> Eye</span>
+      </h1>
+    </div>
+
+    <div class="header-status">
+      <div class="status-dot" id="statusDot">
+        <span id="statusText">Connecting…</span>
+      </div>
+
+      <!-- GPS Status Badge -->
+      <div id="gpsBadge" style="display:flex;align-items:center;gap:6px;font-size:0.75rem;
+                                  color:var(--text-secondary);cursor:default" title="GPS Status">
+        <span id="gpsIcon" style="font-size:0.9rem">📍</span>
+        <span id="gpsIndicator" style="color:var(--text-muted);font-variant-numeric:tabular-nums">—</span>
+        <span id="gpsSource"    style="color:var(--text-muted);font-size:0.65rem"></span>
+      </div>
+
+      <a href="/api/health" target="_blank" class="btn" style="font-size:0.75rem;padding:4px 10px">
+        API
+      </a>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <div class="main-content">
+
+    
+    <!-- LEFT PANEL — Video Feed                                     -->
+    
+    <div class="panel-left">
+
+      <!-- Control Bar -->
+      <div class="control-bar">
+
+        <!-- Mode Tabs -->
+        <div class="mode-tabs">
+          <button class="mode-tab active" id="modeCameraTab">Live Camera</button>
+          <button class="mode-tab"        id="modeUploadTab">Upload Video</button>
+        </div>
+
+        <!-- Camera Controls -->
+        <div id="cameraControls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <!-- Camera source selector -->
+          <div style="display:flex;background:var(--bg-primary);border-radius:var(--radius);
+                      padding:3px;gap:2px;border:1px solid var(--border)">
+            <button class="mode-tab active" id="srcBrowserBtn"
+                    title="Use this device's webcam via browser getUserMedia (works in Docker / remote)">
+              Browser
+            </button>
+            <button class="mode-tab" id="srcServerBtn"
+                    title="Connect to an RTSP/HTTP stream (GoPro, IP camera, dashcam, etc.)">
+              Stream
+            </button>
+          </div>
+
+          <!-- RTSP/HTTP URL input — visible only when Stream mode is selected -->
+          <div id="rtspUrlGroup" style="display:none;align-items:center;gap:6px;flex:1;min-width:180px;max-width:340px">
+            <input type="text" id="rtspUrlInput"
+                   placeholder="rtsp://192.168.1.x/stream  or  http://cam/video"
+                   title="Enter your camera's RTSP or HTTP stream URL"
+                   style="flex:1;padding:5px 8px;background:var(--bg-primary);
+                          border:1px solid var(--border);border-radius:var(--radius);
+                          color:var(--text-primary);font-size:0.75rem;outline:none">
+            <span id="rtspConnStatus" style="font-size:0.85rem;flex-shrink:0" title="Stream connection status"></span>
+          </div>
+
+          <!-- Confidence threshold — compact slider always visible in camera mode -->
+          <div style="display:flex;align-items:center;gap:5px;margin-left:auto">
+            <span style="font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Conf</span>
+            <input type="range" id="confSlider" min="10" max="90" value="35" step="5"
+                   title="Detection confidence threshold"
+                   style="width:70px;accent-color:var(--accent-yellow);cursor:pointer;vertical-align:middle">
+            <span id="confValue" style="font-size:0.75rem;color:var(--accent-yellow);
+                                        min-width:28px;font-variant-numeric:tabular-nums">35%</span>
+          </div>
+
+          <button class="btn btn-primary" id="startCameraBtn">▶ Start</button>
+          <button class="btn btn-warning" id="stopCameraBtn">Reset</button>
+        </div>
+
+        <!-- Upload Controls -->
+        <div id="uploadControls" class="hidden" style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary" id="uploadBtn">
+            ⬆ Select Video
+          </button>
+          <button class="btn btn-danger" id="stopUploadBtn" disabled>
+            ■ Stop
+          </button>
+          <a id="downloadLink" class="btn btn-success" style="display:none" download>
+            ⬇ Download Output
+          </a>
+        </div>
+
+        <!-- Hidden file input -->
+        <input type="file" id="uploadInput" accept=".mp4,.avi,.mov,.mkv,.webm,.m4v" hidden>
+
+        <!-- Spacer -->
+        <div style="flex:1"></div>
+
+        <!-- Pipeline status indicator -->
+        <div id="pipelineStatus" style="font-size:0.72rem;color:var(--text-muted)">
+          <span class="spinner"></span> Loading pipeline…
+        </div>
+      </div>
+
+      <!-- Alert Banner -->
+      <div class="alert-banner" id="alertBanner">
+        <span class="alert-icon">⚠</span>
+        <span id="alertMessage">Pothole detected ahead!</span>
+      </div>
+
+      <!-- Video Container -->
+      <div class="video-container" id="videoContainer">
+        <!--
+          #videoFeed   — displays the annotated JPEG returned by the server pipeline
+          #browserPreview — raw browser camera preview (hidden; used by BrowserCamera
+                            to draw frames onto #captureCanvas before sending)
+          #captureCanvas  — offscreen canvas; never shown directly
+        -->
+        <img id="videoFeed" style="display:none" alt="Detection feed">
+
+        <!-- Browser camera preview (shown briefly before pipeline result arrives) -->
+        <video id="browserPreview" autoplay muted playsinline
+               style="display:none"></video>
+
+        <!-- Hidden capture canvas (pixel buffer for getUserMedia frames) -->
+        <canvas id="captureCanvas" style="display:none"></canvas>
+
+        <div class="video-placeholder" id="videoPlaceholder">
+          <div class="ph-icon"></div>
+          <p>Select a camera source above, then press Start</p>
+          <p style="font-size:0.75rem">RT-DETR · YOLOv8l-seg · DepthAnything V2</p>
+        </div>
+      </div>
+
+      <!-- Upload Zone (shown in Upload mode) -->
+      <div class="upload-zone hidden" id="uploadPanel" style="display:none">
+        <div class="upload-icon">📁</div>
+        <p style="font-size:0.9rem;font-weight:600;margin-bottom:4px">Drag &amp; drop a video file here</p>
+        <p style="font-size:0.78rem">or click to browse · MP4, AVI, MOV, MKV, WEBM</p>
+        <div id="uploadZone" style="position:absolute;inset:0;cursor:pointer"></div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="progress-container" id="progressContainer">
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+        </div>
+        <div class="progress-label">
+          <span id="progressFrames">—</span>
+          <span id="progressLabel">0%</span>
+        </div>
+      </div>
+
+      <!-- Metrics Bar -->
+      <div class="metrics-bar">
+        <div class="metric-item">
+          <div class="metric-label">FPS</div>
+          <div class="metric-value fps" id="metFPS">—</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Potholes (DB)</div>
+          <div class="metric-value" id="metPotholes">0</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Latency</div>
+          <div class="metric-value" id="metLatency">—</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Session</div>
+          <div class="metric-value" id="metSession">0</div>
+        </div>
+      </div>
+
+    </div><!-- /panel-left -->
+
+    
+    <!-- RIGHT PANEL — Map / Detections / Alerts                    -->
+    
+    <div class="panel-right">
+
+      <!-- Tab Bar -->
+      <div class="right-tabs">
+        <button class="right-tab active" data-tab="mapPanel">Map</button>
+        <button class="right-tab"        data-tab="detectionsPanel">Detections</button>
+        <button class="right-tab"        data-tab="alertsPanel">Alerts</button>
+        <button class="right-tab"        data-tab="reportPanel">Report</button>
+      </div>
+
+      <div class="right-panel-body">
+
+        <!-- Map Panel -->
+        <div class="tab-panel active" id="mapPanel">
+
+          <!-- Directions bar -->
+          <div style="display:flex;gap:6px;padding:7px 10px;background:var(--bg-secondary);
+                      border-bottom:1px solid var(--border);align-items:center;flex-wrap:wrap">
+            <input id="dirFrom" type="text" placeholder="From (address or place)…"
+                   style="flex:1;min-width:100px;padding:4px 8px;background:var(--bg-card);
+                          border:1px solid var(--border);border-radius:var(--radius);
+                          color:var(--text-primary);font-size:0.75rem;outline:none"
+                   onkeydown="if(event.key==='Enter')getDirections()">
+            <input id="dirTo" type="text" placeholder="To (address or place)…"
+                   style="flex:1;min-width:100px;padding:4px 8px;background:var(--bg-card);
+                          border:1px solid var(--border);border-radius:var(--radius);
+                          color:var(--text-primary);font-size:0.75rem;outline:none"
+                   onkeydown="if(event.key==='Enter')getDirections()">
+            <button class="btn btn-primary" style="padding:4px 10px;font-size:0.72rem"
+                    onclick="getDirections()">Route</button>
+            <button class="btn" style="padding:4px 8px;font-size:0.72rem"
+                    onclick="clearDirections()" title="Clear route">✕</button>
+            <span id="dirInfo" style="font-size:0.72rem;color:var(--accent-purple);font-weight:500"></span>
+          </div>
+
+          <div id="map" style="flex:1"></div>
+
+          <div style="padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);
+                      display:flex;align-items:center;gap:12px;font-size:0.72rem;color:var(--text-secondary);
+                      flex-wrap:wrap">
+            <span>⭐ Near</span>
+            <span style="color:var(--near-color)">●</span>
+            <span>Medium</span>
+            <span style="color:var(--medium-color)">●</span>
+            <span>Far</span>
+            <span style="color:var(--far-color)">●</span>
+            <span style="color:var(--accent-blue)">⬤ You</span>
+            <div style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn" style="padding:2px 10px;font-size:0.72rem"
+                      onclick="window.mapController?.toggleHeatmap()">
+                Heatmap
+              </button>
+              <button class="btn" id="styleToggleBtn" style="padding:2px 10px;font-size:0.72rem"
+                      onclick="toggleMapStyle()" title="Switch light / dark style">
+                ☀ Light
+              </button>
+              <button class="btn" id="view3DBtn" style="padding:2px 10px;font-size:0.72rem"
+                      onclick="toggle3DView()" title="Toggle 3D pitch view">
+                3D
+              </button>
+              <button class="btn" style="padding:2px 10px;font-size:0.72rem"
+                      onclick="window.mapController?._fetchAndUpdate()">
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Detections Panel── -->
+        <div class="tab-panel" id="detectionsPanel">
+          <div style="padding:10px 12px;background:var(--bg-secondary);border-bottom:1px solid var(--border);
+                      display:flex;align-items:center;justify-content:space-between">
+            <span style="font-size:0.8rem;font-weight:600">Detected Potholes</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" onclick="loadPotholeList()">Refresh</button>
+              <button class="btn btn-sm btn-danger" onclick="clearAllPotholes()">Clear All</button>
+            </div>
+          </div>
+          <div class="pothole-list" id="potholeList">
+            <div class="text-muted" style="padding:20px;text-align:center">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Alerts Panel── -->
+        <div class="tab-panel" id="alertsPanel">
+          <div style="padding:10px 12px;background:var(--bg-secondary);border-bottom:1px solid var(--border);
+                      display:flex;align-items:center;justify-content:space-between">
+            <span style="font-size:0.8rem;font-weight:600">Alert History</span>
+            <button class="btn btn-sm" onclick="document.getElementById('alertLog').innerHTML=''">Clear</button>
+          </div>
+          <div class="alert-log" id="alertLog">
+            <div class="text-muted" style="padding:20px;text-align:center">No alerts yet</div>
+          </div>
+        </div>
+
+        <!-- Report Panel── -->
+        <div class="tab-panel" id="reportPanel">
+          <div style="padding:16px;overflow-y:auto;flex:1">
+
+            <div style="margin-bottom:16px">
+              <div style="font-size:0.9rem;font-weight:700;margin-bottom:6px">
+                MDOT Automated Reporting
+              </div>
+              <div style="font-size:0.8rem;color:var(--text-secondary);line-height:1.6">
+                This system can automatically submit pothole reports to the
+                <strong>Maryland Department of Transportation State Highway Administration</strong>
+                (SHA.CustomerService@maryland.gov). Configure SMTP credentials in <code>.env</code>
+                to enable email delivery.
+              </div>
+            </div>
+
+            <!-- Report Statistics -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+              <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+                <div style="font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Total Potholes</div>
+                <div style="font-size:1.4rem;font-weight:700;color:var(--accent-blue)" id="rptTotal">—</div>
+              </div>
+              <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+                <div style="font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Reported</div>
+                <div style="font-size:1.4rem;font-weight:700;color:var(--accent-green)" id="rptReported">—</div>
+              </div>
+              <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+                <div style="font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Near Risk</div>
+                <div style="font-size:1.4rem;font-weight:700;color:var(--near-color)" id="rptNear">—</div>
+              </div>
+              <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
+                <div style="font-size:0.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Crossed</div>
+                <div style="font-size:1.4rem;font-weight:700;color:var(--accent-yellow)" id="rptCrossed">—</div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <button class="btn btn-primary" onclick="reportAllUnreported()" style="width:100%">
+                Report All Unreported to SHA
+              </button>
+              <button class="btn" onclick="loadReportStats()" style="width:100%">
+                Refresh Statistics
+              </button>
+              <button class="btn" onclick="downloadPotholeData()" style="width:100%">
+                Download Pothole Data (JSON)
+              </button>
+            </div>
+
+            <!-- Email Config Status -->
+            <div style="margin-top:16px;padding:12px;background:var(--bg-card);border:1px solid var(--border);
+                        border-radius:var(--radius);font-size:0.78rem">
+              <div style="font-weight:600;margin-bottom:6px;color:var(--text-secondary)">Email Configuration</div>
+              <div style="color:var(--text-muted)">
+                Set <code>REPORT_FROM_EMAIL</code>, <code>SMTP_USERNAME</code>, and <code>SMTP_PASSWORD</code>
+                in your <code>.env</code> file to enable automated email reporting. Without these,
+                reports are logged to the console (dry-run mode).
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /panel-right -->
+  </div><!-- /main-content -->
+
+</div><!-- /app-wrapper -->
+
+<!-- Toast Notifications -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- Dashboard JS — load order matters -->
+<script src="{{ url_for('static', filename='js/map.js') }}?v={{ cache_bust }}"></script>
+<script src="{{ url_for('static', filename='js/camera.js') }}?v={{ cache_bust }}"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}?v={{ cache_bust }}"></script>
+
+<!-- Inline extras: pipeline status update + report stats -->
+<script>
+  // Pipeline ready handler updates the status badge
+  socket.on('pipeline_ready', (data) => {
+    const indicator = document.getElementById('pipelineStatus');
+    if (data.status === 'ready') {
+      if (indicator) indicator.innerHTML = '<span style="color:var(--accent-green)">✓ Pipeline ready</span>';
+    } else {
+      if (indicator) indicator.innerHTML = '<span style="color:var(--accent-red)">✗ Pipeline error</span>';
+    }
+  });
+
+  // GPS manager is created as window.gpsManager inside the camera DOMContentLoaded
+  // block below and started/stopped with the camera session — not on page load.
+
+  // Load report stats
+  async function loadReportStats() {
+    try {
+      const res = await fetch('/api/stats');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const s = await res.json();
+      const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
+      set('rptTotal',    s.total);
+      set('rptReported', s.reported);
+      set('rptNear',     s.near);
+      set('rptCrossed',  s.crossed);
+    } catch (e) {
+      console.warn('loadReportStats failed:', e);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', loadReportStats);
+  setInterval(loadReportStats, 20_000);
+
+  // Report all unreported
+  async function reportAllUnreported() {
+    if (!confirm('Send MDOT reports for all unreported potholes?')) return;
+    try {
+      const res  = await fetch('/api/potholes?limit=500');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const unreported = (data.potholes || []).filter(p => !p.reported);
+      if (!unreported.length) { toast('No unreported potholes.', 'warning'); return; }
+
+      toast(`Sending ${unreported.length} report${unreported.length > 1 ? 's' : ''}…`);
+      let sent = 0, failed = 0;
+      for (const ph of unreported) {
+        try {
+          const r = await fetch(`/api/potholes/${ph.id}/report`, { method: 'POST' });
+          const d = await r.json();
+          if (d.status === 'sent' || d.status === 'dry_run') sent++;
+          else failed++;
+        } catch { failed++; }
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      const msg  = failed > 0
+        ? `${sent} sent, ${failed} failed`
+        : `All ${sent} report${sent > 1 ? 's' : ''} sent`;
+      toast(msg, failed > 0 ? 'warning' : 'success');
+      loadReportStats();
+    } catch (e) {
+      toast('Batch report error: ' + e.message, 'danger');
+    }
+  }
+  window.reportAllUnreported = reportAllUnreported;
+
+  async function downloadPotholeData() {
+    try {
+      const res  = await fetch('/api/potholes?limit=1000');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `potholes_${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast('Download failed: ' + e.message, 'danger');
+    }
+  }
+  window.downloadPotholeData = downloadPotholeData;
+
+  // Clear all potholes
+  async function clearAllPotholes() {
+    // 1. Wipe map immediately — no waiting for network
+    window.mapController?.clearAllMapMarkers();
+    try {
+      const res  = await fetch('/api/potholes?limit=1000');
+      const data = await res.json();
+      for (const ph of (data.potholes || [])) {
+        await fetch('/api/potholes/' + ph.id, { method: 'DELETE' });
+      }
+      toast('All potholes cleared.', 'success');
+      loadPotholeList();
+      loadReportStats();
+    } catch (e) {
+      toast('Clear error: ' + e.message, 'danger');
+      window.mapController?._fetchAndUpdate(); // restore on failure
+    }
+  }
+  window.clearAllPotholes = clearAllPotholes;
+
+  // Override deletePothole so the marker disappears instantly (before API call)
+  // This runs after dashboard.js sets window.deletePothole, so it safely wraps it.
+  document.addEventListener('DOMContentLoaded', () => {
+    const _orig = window.deletePothole;
+    window.deletePothole = async function(id) {
+      window.mapController?.removeMarkerById(id);   // instant — no network
+      if (typeof _orig === 'function') await _orig(id);
+    };
+    window.deletePothole.__wrapped = true;
+  });
+
+  // Map feature helpers───
+
+  async function getDirections() {
+    const from = document.getElementById('dirFrom').value.trim();
+    const to   = document.getElementById('dirTo').value.trim();
+    if (!from || !to) { toast('Enter both From and To locations', 'warning'); return; }
+    const info = document.getElementById('dirInfo');
+    info.textContent = 'Routing…';
+    try {
+      const result = await window.mapController.getDirections(from, to);
+      info.textContent = `${result.distance} · ${result.duration}`;
+    } catch (e) {
+      info.textContent = '';
+      toast('Route error: ' + e.message, 'danger');
+    }
+  }
+  window.getDirections = getDirections;
+
+  function clearDirections() {
+    window.mapController?.clearDirections();
+    document.getElementById('dirInfo').textContent = '';
+    document.getElementById('dirFrom').value = '';
+    document.getElementById('dirTo').value = '';
+  }
+  window.clearDirections = clearDirections;
+
+  function toggleMapStyle() {
+    window.mapController?.toggleStyle();
+    const btn = document.getElementById('styleToggleBtn');
+    if (btn) btn.textContent = window.mapController?._isDark ? '☀ Light' : '🌙 Dark';
+  }
+  window.toggleMapStyle = toggleMapStyle;
+
+  function toggle3DView() {
+    window.mapController?.toggle3D();
+    const btn = document.getElementById('view3DBtn');
+    if (btn) btn.textContent = window.mapController?._is3D ? '2D' : '3D';
+  }
+  window.toggle3DView = toggle3DView;
+
+  // Email Report──────────
+
+  async function reportPotholeEmail(id) {
+    // 1. Fetch pothole details
+    let ph = null;
+    try {
+      const res = await fetch(`/api/potholes/${id}`);
+      if (res.ok) ph = await res.json();
+    } catch (e) { /* fall through — modal still shows */ }
+
+    const lat      = ph?.latitude  ? ph.latitude.toFixed(6)  : 'N/A';
+    const lng      = ph?.longitude ? ph.longitude.toFixed(6) : 'N/A';
+    const risk     = (ph?.risk_level || 'unknown').toUpperCase();
+    const conf     = ph?.confidence ? (ph.confidence * 100).toFixed(0) + '%' : 'N/A';
+    const seen     = ph?.last_seen  ? new Date(ph.last_seen).toLocaleString() : new Date().toLocaleString();
+    const dist     = ph?.estimated_distance_m ? ph.estimated_distance_m.toFixed(1) + ' m' : 'N/A';
+    const mapsLink = lat !== 'N/A'
+      ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}&zoom=17` : '';
+    const hasSnap  = !!ph?.snapshot_path;
+
+    // 2. Try backend send (attaches snapshot via SMTP)───
+    let sendStatus = 'not_attempted';
+    try {
+      const r    = await fetch(`/api/potholes/${id}/personal-report`, { method: 'POST' });
+      const data = await r.json();
+      sendStatus = data.status;   // 'sent' | 'dry_run' | 'failed'
+      if (data.status === 'sent') {
+        toast(`Email sent (Ref: ${data.reference_number})${hasSnap ? ' + snapshot attached' : ''}`, 'success');
+      } else if (data.status === 'dry_run') {
+        toast('SMTP not configured — showing email text for manual send', 'warning');
+      } else {
+        toast('Email send failed: ' + (data.error || 'unknown'), 'danger');
+      }
+    } catch (e) {
+      toast('Could not reach backend — showing email text below', 'warning');
+    }
+
+    // 3. Build preview text (always shown as record / manual fallback)
+    const snapNote = hasSnap
+      ? `Snapshot       : [attached — ${ph.snapshot_path}]`
+      : `Snapshot       : (none captured)`;
+
+    const emailBody =
+`To: hasanmahade237@gmail.com
+From: m.h.mishuk26362@gmail.com
+Subject: Pothole Hazard Report — ID #${id} [${risk}]
+Date: ${new Date().toUTCString()}
+
+Dear Sir/Madam,
+
+A pothole has been detected and confirmed by the AI Eyes on the Road system.
+
+INCIDENT DETAILS
+${'-'.repeat(36)}
+Pothole ID      : #${id}
+Risk Level      : ${risk}
+Confidence      : ${conf}
+Distance        : ${dist}
+GPS Coordinates : ${lat}, ${lng}
+Detected At     : ${seen}
+${mapsLink ? 'Map Link        : ' + mapsLink : ''}
+${snapNote}
+
+This pothole poses a risk to road users and requires prompt inspection and repair.
+
+Regards,
+AI Eyes on the Road — Automated Reporting System`;
+
+    // 4. Show / update modal
+    let modal = document.getElementById('emailReportModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'emailReportModal';
+      modal.style.cssText = `position:fixed;inset:0;z-index:9999;display:flex;align-items:center;
+        justify-content:center;background:rgba(0,0,0,0.7);padding:16px`;
+      modal.innerHTML = `
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);
+                    width:100%;max-width:560px;display:flex;flex-direction:column;max-height:90vh">
+          <div style="display:flex;justify-content:space-between;align-items:center;
+                      padding:12px 16px;border-bottom:1px solid var(--border)">
+            <span style="font-weight:700;font-size:0.9rem">📧 Pothole Report Email</span>
+            <button onclick="document.getElementById('emailReportModal').style.display='none'"
+                    style="background:none;border:none;color:var(--text-secondary);
+                           font-size:1.2rem;cursor:pointer;line-height:1">✕</button>
+          </div>
+          <div id="emailSendBadge" style="padding:6px 16px;font-size:0.75rem;display:none"></div>
+          <textarea id="emailReportBody" readonly
+                    style="flex:1;margin:12px 16px;padding:10px;background:var(--bg-primary);
+                           border:1px solid var(--border);border-radius:var(--radius);
+                           color:var(--text-primary);font-family:monospace;font-size:0.75rem;
+                           line-height:1.6;resize:none;min-height:280px;outline:none"></textarea>
+          <div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border)">
+            <button onclick="navigator.clipboard.writeText(document.getElementById('emailReportBody').value)
+                             .then(()=>toast('Copied','success'))"
+                    class="btn btn-primary" style="flex:1">Copy Text</button>
+            <a id="emailReportMailto" href="#" class="btn" style="flex:1;text-align:center">
+              Open in Mail App
+            </a>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+    }
+
+    // Update badge
+    const badge = document.getElementById('emailSendBadge');
+    if (badge) {
+      const badgeMap = {
+        sent:     ['var(--accent-green)',  `✓ Sent via SMTP${hasSnap ? ' (snapshot attached)' : ''}`],
+        dry_run:  ['var(--accent-yellow)', '⚠ SMTP not configured — use manual send below'],
+        failed:   ['var(--accent-red)',    '✗ SMTP send failed — use manual send below'],
+        not_attempted: ['var(--text-muted)', 'Preview only'],
+      };
+      const [color, label] = badgeMap[sendStatus] || badgeMap.not_attempted;
+      badge.style.color   = color;
+      badge.style.display = 'block';
+      badge.textContent   = label;
+    }
+
+    document.getElementById('emailReportBody').value = emailBody;
+    const mailtoBody = encodeURIComponent(emailBody.split('\n').slice(3).join('\n').trim());
+    document.getElementById('emailReportMailto').href =
+      `mailto:hasanmahade237@gmail.com?subject=${encodeURIComponent('Pothole Hazard Report — ID #' + id + ' [' + risk + ']')}&body=${mailtoBody}`;
+    modal.style.display = 'flex';
+    modal.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+  }
+  window.reportPotholeEmail = reportPotholeEmail;
+
+  // Camera source & stream control
+  // Single, authoritative handler for all camera start/stop logic.
+  // Uses stopImmediatePropagation() so the old dashboard.js bubble listener
+  // never fires — eliminating the double-emit / accidental server-camera-start bug.
+
+  let cameraSource = 'browser';   // 'browser' | 'stream'
+  let browserCam   = null;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const srcBrowserBtn = document.getElementById('srcBrowserBtn');
+    const srcServerBtn  = document.getElementById('srcServerBtn');
+    const rtspUrlGroup  = document.getElementById('rtspUrlGroup');
+    const rtspConnEl    = document.getElementById('rtspConnStatus');
+    const startBtn      = document.getElementById('startCameraBtn');
+    const stopBtn       = document.getElementById('stopCameraBtn');
+    const videoEl       = document.getElementById('browserPreview');
+    const canvas        = document.getElementById('captureCanvas');
+    const videoFeed     = document.getElementById('videoFeed');
+    const placeholder   = document.getElementById('videoPlaceholder');
+
+    // Source selection────
+    function selectSource(src) {
+      cameraSource = src;
+      srcBrowserBtn.classList.toggle('active', src === 'browser');
+      srcServerBtn.classList.toggle('active',  src === 'stream');
+      if (rtspUrlGroup) rtspUrlGroup.style.display = src === 'stream' ? 'flex' : 'none';
+    }
+
+    srcBrowserBtn?.addEventListener('click', () => selectSource('browser'));
+    srcServerBtn?.addEventListener('click',  () => selectSource('stream'));
+
+    // Shared helpers───────
+    function _markCameraStarted(label) {
+      startBtn.disabled = true;
+      stopBtn.disabled  = false;  // Reset always available
+      state.cameraActive = true;
+      setStatus('active', label);
+      window.onCameraSessionStart?.();   // snapshot DB total → session counter
+      window.gpsManager?.start();        // GPS only while camera is live
+    }
+
+    function _markCameraStopped() {
+      startBtn.disabled = false;
+      stopBtn.disabled  = false;  // Reset always available
+      state.cameraActive = false;
+      setStatus('connected', 'Idle');
+      window.gpsManager?.stop();
+      window.onCameraSessionStop?.();    // clear FPS / Latency metrics
+      videoFeed.style.display  = 'none';
+      placeholder.style.display = 'flex';
+    }
+
+    // Start ─
+    startBtn?.addEventListener('click', async (e) => {
+      // stopImmediatePropagation prevents the old dashboard.js bubble handler
+      // from also emitting start_camera for browser mode
+      e.stopImmediatePropagation();
+
+      if (!state.pipelineReady) {
+        toast('Pipeline still loading — please wait…', 'warning');
+        socket.emit('init_pipeline');
+        return;
+      }
+
+      if (cameraSource === 'browser') {
+        // Browser getUserMedia path─
+        if (!browserCam) {
+          browserCam = new BrowserCamera(socket, videoEl, canvas);
+
+          browserCam.onStarted = () => {
+            videoEl.style.display = 'block';
+            placeholder.style.display = 'none';
+            _markCameraStarted('Browser Camera');
+            toast('Browser camera started', 'success');
+          };
+
+          browserCam.onStopped = () => {
+            videoEl.style.display = 'none';
+            _markCameraStopped();
+          };
+
+          browserCam.onError = (msg) => {
+            toast(msg, 'danger');
+            startBtn.disabled = false;
+            stopBtn.disabled  = true;
+            state.cameraActive = false;
+            setStatus('connected', 'Camera Error');
+          };
+        }
+        await browserCam.start();
+
+      } else {
+        // RTSP / HTTP stream path
+        const url = document.getElementById('rtspUrlInput')?.value.trim() || null;
+        if (!url) {
+          toast('Enter a stream URL (rtsp:// or http://) to connect.', 'warning');
+          return;
+        }
+        if (rtspConnEl) rtspConnEl.textContent = '⏳';
+        socket.emit('start_camera', { url });
+        _markCameraStarted('Stream Active');
+      }
+    }, { capture: true });
+
+    // Reset (full restart)─
+    stopBtn?.addEventListener('click', async (e) => {
+      e.stopImmediatePropagation();
+
+      // Tear down everything currently running
+      if (browserCam) {
+        browserCam.stop();
+        browserCam = null;          // force fresh getUserMedia on next start
+      }
+      socket.emit('stop_camera');   // safe no-op if server camera isn't running
+      if (rtspConnEl) rtspConnEl.textContent = '';
+      _markCameraStopped();
+
+      // Auto-restart fresh after cleanup settles
+      if (state.pipelineReady) {
+        await new Promise(r => setTimeout(r, 450));
+        startBtn.click();
+      }
+    }, { capture: true });
+
+    // Server-side events──
+
+    socket.on('camera_error', (data) => {
+      if (rtspConnEl) rtspConnEl.textContent = '❌';
+      if (data.fallback === 'browser') {
+        toast('Server camera unavailable — switching to Browser mode.', 'warning');
+        selectSource('browser');
+      } else {
+        toast('Stream error: ' + (data.message || 'unknown'), 'danger');
+      }
+      startBtn.disabled = false;
+      stopBtn.disabled  = false;  // Reset always available
+      state.cameraActive = false;
+      setStatus('connected', 'Camera Error');
+      window.onCameraSessionStop?.();   // clear stale FPS / Latency values
+    });
+
+    socket.on('camera_status', (data) => {
+      if (data.status === 'reconnecting' && rtspConnEl) rtspConnEl.textContent = '🔄';
+    });
+
+    // Once the server sends an annotated frame, hide browser preview.
+    // dashboard.js sets videoFeed.src + display:block only when data.image is present,
+    // so we must NOT set display:block here — doing so without a valid src shows alt text.
+    socket.on('frame', (data) => {
+      if (!state.cameraActive) return;
+      if (!data.image) return;
+      if (videoEl) videoEl.style.display = 'none';
+      if (rtspConnEl && rtspConnEl.textContent === '⏳') rtspConnEl.textContent = '✅';
+    });
+
+    // GPS Manager (window scope so camera handlers can call start/stop)──
+    window.gpsManager = new GPSManager();
+
+    window.gpsManager.onUpdate = (pos) => {
+      const ind = document.getElementById('gpsIndicator');
+      const src = document.getElementById('gpsSource');
+      if (ind) {
+        ind.textContent = `${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)}`;
+        ind.style.color = pos.source === 'browser'
+          ? 'var(--accent-green)' : 'var(--accent-yellow)';
+      }
+      if (src) src.textContent = pos.source === 'ip' ? `(IP: ${pos.city || 'approx'})` : '';
+
+      // Sync vehicle marker on map
+      if (window.mapController?.map) {
+        if (!window.mapController.vehicleMarker) {
+          const markerEl = document.createElement('div');
+          markerEl.className = 'vehicle-marker';
+          window.mapController.vehicleMarker = new mapboxgl.Marker({ element: markerEl, anchor: 'center' })
+            .setLngLat([pos.lng, pos.lat]).addTo(window.mapController.map);
+        } else {
+          window.mapController.vehicleMarker.setLngLat([pos.lng, pos.lat]);
+        }
+      }
+    };
+
+    window.gpsManager.onError = (msg) => {
+      const ind = document.getElementById('gpsIndicator');
+      if (ind) { ind.textContent = 'No GPS'; ind.style.color = 'var(--text-muted)'; }
+      if (msg.includes('denied') || msg.includes('permission')) {
+        toast('Location denied — enable it in browser site settings.', 'warning');
+      }
+    };
+    // GPS starts only when camera session begins (see _markCameraStarted above)
+  });
+
+  // Upload panel visibility───
+  document.getElementById('modeUploadTab')?.addEventListener('click', () => {
+    document.getElementById('uploadPanel').classList.remove('hidden');
+    document.getElementById('videoContainer').style.display = 'none';
+  });
+  document.getElementById('modeCameraTab')?.addEventListener('click', () => {
+    document.getElementById('uploadPanel').classList.add('hidden');
+    document.getElementById('videoContainer').style.display = 'flex';
+  });
+</script>
+
+</body>
+</html>
