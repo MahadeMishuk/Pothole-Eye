@@ -71,6 +71,10 @@ ___
 
 ---
 
+![Demo](Images/features.gif)
+
+---
+
 ## Performance
 
 **RunPod A40 (48 GB VRAM), CUDA FP16:**
