@@ -92,7 +92,7 @@ ___
 
 | Metric | Value |
 |---|---|
-| mAP50 | 0.729 |
+| mAP50 | 0.763 |
 | Precision | 0.742 |
 | Recall | 0.676 |
 | Training config | YOLOv8m · imgsz=1280 · 150 epochs · A40 AMP FP16 |
