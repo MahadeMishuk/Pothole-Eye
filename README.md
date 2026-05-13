@@ -26,7 +26,7 @@ Pothole Eye processes live dashcam footage or uploaded video to:
 
 ---
 
-<img src="Images/Tools" width="700">
+<img src="Images/Tools.png" width="700">
 
 ---
 <img src="Images/core_capabilities.png" width="700">
