@@ -63,15 +63,11 @@ ___
 | GET | `/api/jobs/<job_id>/progress` | Video upload job progress |
 
 ---
-<video width="700" controls>
-  <source src="Images/test_video_on_road.mp4" type="video/mp4">
-</video>
+![Demo](Images/test_video_on_road.gif)
 
 ---
 
-<video width="700" controls>
-  <source src="Images/testing_on_video.mov" type="video/mp4">
-</video>
+![Demo](Images/testing_on_video.gif)
 
 ---
 
